@@ -784,17 +784,75 @@ class Ksh:
         p('#END')
         p('')
 
+        p('#LYRIC INFO')
+        p('#END')
+        p('')
+
         p('#END POSITION')
         end = max(self.events.keys())
         p(f'{end.to_time_str()}')
         p('#END')
         p('')
 
-        # TODO tab effects
+        p('#TAB EFFECT INFO')
+        p('1,\t90.00,\t400.00,\t18000.00,\t0.70')
+        p('1,\t90.00,\t600.00,\t15000.00,\t5.00')
+        p('2,\t90.00,\t40.00,\t5000.00,\t0.70')
+        p('2,\t90.00,\t40.00,\t2000.00,\t3.00')
+        p('3,\t100.00,\t30')
+        p('#END')
+        p('')
 
-        # TODO fx button effects
+        p('#FXBUTTON EFFECT INFO')
+        # TODO is this really supposed to be hard coded
+        p('''1,\t4,\t95.00,\t2.00,\t1.00,\t0.85,\t0.15
+0,\t0,\t0,\t0,\t0,\t0,\t0
 
-        # TODO tab param assigns
+1,\t8,\t95.00,\t2.00,\t1.00,\t0.75,\t0.10
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+2,\t98.00,\t8,\t1.00
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+3,\t75.00,\t2.00,\t0.50,\t90,\t2.00
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+1,\t16,\t95.00,\t2.00,\t1.00,\t0.87,\t0.13
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+2,\t98.00,\t4,\t1.00
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+1,\t4,\t100.00,\t4.00,\t0.60,\t1.00,\t0.85
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+4,\t100.00,\t8.00,\t0.40
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+5,\t90.00,\t1.00,\t45,\t50,\t60
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+6,\t0,\t3,\t80.00,\t500.00,\t18000.00,\t4.00,\t1.40
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+1,\t6,\t95.00,\t2.00,\t1.00,\t0.85,\t0.15
+0,\t0,\t0,\t0,\t0,\t0,\t0
+
+7,\t100.00,\t12
+0,\t0,\t0,\t0,\t0,\t0,\t0''')
+        p('#END')
+        p('')
+
+        p('#TAB PARAM ASSIGN INFO')
+        # TODO does this number mean anything
+        for _ in range(24):
+            p('0,\t0,\t0.00,\t0.00')
+        p('#END')
+        p('')
+
+        p('#REVERB EFFECT PARAM')
+        p('#END')
+        p('')
 
         def laser_track(i):
             p('#TRACK' + str(i))
@@ -806,7 +864,7 @@ class Ksh:
                     else:
                         lasers = [event]
                     for laser in lasers:
-                        position = laser.position
+                        position = int(laser.position)
                         node_type = laser.node_cont.value
                         if laser.roll_kind is None:
                             roll_kind = 0
@@ -822,7 +880,7 @@ class Ksh:
             for now, events in self.events.items():
                 if (EventKind.TRACK, i) in events:
                     event: ButtonPress = events[(EventKind.TRACK, i)]
-                    duration = event.duration
+                    duration = int(event.duration)
                     if event.button.is_fx():
                         if duration > 0:
                             fx_data = event.effect + 2
@@ -843,7 +901,18 @@ class Ksh:
         button_track(7)
         laser_track(8)
 
-        # TODO sp controller shit
+        p('#TRACK AUTO TAB')
+        p('#END')
+        p('')
+
+        p('#SPCONTROLER') # [sic]
+        # TODO this probably shouldn't be hardcoded
+        p('''001,01,00\tAIRL_ScaX\t1\t0\t0.00\t1.00\t0.00\t0.00
+001,01,00\tAIRR_ScaX\t1\t0\t0.00\t2.00\t0.00\t0.00
+001,01,00\tRealize\t3\t0\t17.12\t60.12\t110.12\t0.00
+001,01,00\tRealize\t4\t0\t0.28\t0.72\t1.57\t0.00''')
+        p('#END')
+        p('')
 
     def close(self):
         self.kshfile.close()
