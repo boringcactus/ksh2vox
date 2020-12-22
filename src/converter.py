@@ -90,12 +90,7 @@ class KshLoadError(Exception):
     pass
 
 class KshParseError(Exception):
-    def __init__(self, section, msg):
-        self.section = section
-        self.msg = msg
-
-    def __str__(self):
-        return f'({self.section}) {self.msg}'
+    pass
 
 class VoxConvertError(Exception):
     pass
@@ -669,7 +664,6 @@ class Ksh:
 
             if line == '--':
                 now = Timing(now.measure + 1, 1, 0)
-                laser_range = {LaserSide.LEFT: 1, LaserSide.RIGHT: 1}
             elif line.startswith('beat='):
                 _, sig = line.split('=')
                 top, bottom = sig.split('/')
@@ -687,7 +681,7 @@ class Ksh:
             #elif SpcParam.from_ksh_name(line.split('=')[0]) is not None:
             #    raise NotImplementedError('SP Controller things are over my head')
             elif '=' in line:
-                raise NotImplementedError('what even is a ' + line)
+                raise KshParseError('what even is a ' + line)
             else:
                 ksh_line = KshLine(line)
                 slam = False
