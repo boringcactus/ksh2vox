@@ -492,6 +492,10 @@ class Difficulty(Enum):
             # TODO Error handling.
             return None
 
+    @classmethod
+    def from_ksh_name(cls, k):
+        return next(x for x in cls if x.value[2] == k)
+
     def to_ksh_name(self):
         return self.value[2]
 
