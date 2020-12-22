@@ -730,7 +730,7 @@ class Ksh:
                         self.events[now][(EventKind.TRACK, button.to_track_num())] = event
                     elif ksh_line.buttons[button] == KshLine.ButtonState.PRESS:
                         self.events[now][(EventKind.TRACK, button.to_track_num())] = ButtonPress(button, 0, 3) # TODO effects
-                now.add(1, timesig)
+                now = now.add(1, timesig)
 
         # TODO effect defines
 
