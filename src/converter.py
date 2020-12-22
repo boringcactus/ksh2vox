@@ -1,7 +1,10 @@
 #!/usr/bin/env python3.7
 from enum import Enum, auto
+from collections import defaultdict
 from glob import glob
 import threading
+import re
+from functools import total_ordering
 
 from recordclass import dataobject
 from xml.etree import ElementTree
@@ -37,6 +40,9 @@ FX_CHIP_SOUND_EXTENSION = '.wav'
 FX_CHIP_SOUND_VOL_PERCENT = 27
 
 MAX_MEASURES = 999
+
+def to_path(text):
+    return re.sub(r'[^\w]+', '_', text)
 
 class Debug:
     class State(Enum):
@@ -84,10 +90,10 @@ def truncate(x, digits) -> float:
     stepper = 10.0 ** digits
     return math.trunc(stepper * x) / stepper
 
-class VoxLoadError(Exception):
+class KshLoadError(Exception):
     pass
 
-class VoxParseError(Exception):
+class KshParseError(Exception):
     def __init__(self, section, msg):
         self.section = section
         self.msg = msg
@@ -95,7 +101,7 @@ class VoxParseError(Exception):
     def __str__(self):
         return f'({self.section}) {self.msg}'
 
-class KshConvertError(Exception):
+class VoxConvertError(Exception):
     pass
 
 class TimeSignature:
@@ -113,17 +119,9 @@ class Timing:
         self.beat: int = beat
         self.offset: int = offset
 
-    @classmethod
-    def from_time_str(cls, time: str):
-        """ Create a Timing from the format string that appears in the first column of vox tracks. """
-        splitted = time.split(',')
-        # TODO check bounds using current time signature
-        try:
-            return cls(int(splitted[0]), int(splitted[1]), int(splitted[2]))
-        except ValueError:
-            return None
-        except IndexError:
-            return None
+    def to_time_str(self):
+        """ Create the format string that appears in the first column of vox tracks. """
+        return f'{self.measure}, {self.beat}, {self.offset}'
 
     def diff(self, other, timesig):
         return (self.measure - other.measure) * (timesig.ticks_per_beat() * timesig.top) \
@@ -149,13 +147,8 @@ class Timing:
     def __str__(self):
         return '{},{},{}'.format(self.measure, self.beat, self.offset)
 
-    def __cmp__(self, other):
-        # TODO There has to be a better way to express this
-        if self.measure == other.measure:
-            if self.beat == other.beat:
-                return self.offset - other.offset
-            return self.beat - other.beat
-        return self.measure - other.measure
+    def __lt__(self, other):
+        return (self.measure, self.beat, self.offset) < (other.measure, other.beat, other.offset)
 
 class CameraNode(dataobject):
     start_param: float
@@ -165,50 +158,50 @@ class CameraNode(dataobject):
 # TODO Use mapped_enum
 class SpcParam(Enum):
     """ SPCONTROLLER section param. """
-    @classmethod
-    def from_vox_name(cls, vox_name):
-        if vox_name == 'CAM_RotX':
-            return cls.ROT_X
-        elif vox_name == 'CAM_Radi':
-            return cls.RAD_I
-        elif vox_name == 'Realize':
-            return cls.REALIZE
-        elif vox_name == 'AIRL_ScaX':
-            return cls.AIRL_SCAX
-        elif vox_name == 'AIRR_ScaX':
-            return cls.AIRR_SCAX
-        elif vox_name == 'Tilt':
-            return cls.TILT
-        elif vox_name == 'LaneY':
-            return cls.LANE_Y
-
-        raise ValueError(f'invalid camera param "{vox_name}"')
+    def to_vox_name(self):
+        if self == self.ROT_X:
+            return 'CAM_RotX'
+        elif self == self.RAD_I:
+            return 'CAM_Radi'
+        elif self == self.REALIZE:
+            return 'Realize'
+        elif self == self.AIRL_SCAX:
+            return 'AIRL_ScaX'
+        elif self == self.AIRR_SCAX:
+            return 'AIRR_ScaX'
+        elif self == self.TILT:
+            return 'Tilt'
+        elif self == self.LANE_Y:
+            return 'LaneY'
+        else:
+            return None
 
     def is_state(self):
         return self == self.LANE_Y
 
-    def to_ksh_name(self):
-        if self == self.ROT_X:
-            return 'zoom_top'
-        elif self == self.RAD_I:
-            return 'zoom_bottom'
-        elif self == self.TILT:
-            return 'tilt'
-        elif self == self.LANE_Y:
-            return 'lane_toggle'
+    @classmethod
+    def from_ksh_name(cls, ksh_name):
+        if ksh_name == 'zoom_top':
+            return cls.ROT_X
+        elif ksh_name == 'zoom_bottom':
+            return cls.RAD_I
+        elif ksh_name == 'tilt':
+            return cls.TILT
+        elif ksh_name == 'lane_toggle':
+            return cls.LANE_Y
         else:
             return None
 
-    def to_ksh_value(self, val:float=0):
-        # Convert the vox value to the one that will be printed to the ksh.
+    def from_ksh_value(self, val:float=0):
+        # Convert the ksh value to the one that will be printed to the vox.
         if self == self.ROT_X:
-            return int(val * 150.0)
+            return val / 150.0
         elif self == self.RAD_I:
-            return int(val * -150.0)
+            return val / -150.0
         elif self == self.TILT:
-            return truncate(val * -1.0, 1)
+            return -val
         elif self == self.LANE_Y:
-            return int(val)
+            return float(val)
         return None
 
     ROT_X = auto()
@@ -231,37 +224,38 @@ class SpcParam(Enum):
         # TODO Other params maybe
 
 class KshFilter(Enum):
-    @classmethod
-    def from_vox_filter_id(cls, filter_id):
+    def to_vox_filter_id(self):
         # TODO Correct this so filter indices line up with the TAB EFFECT INFO instead of being hardcoded
-        if filter_id == 0:
-            return cls.PEAK
-        elif filter_id == 1 or filter_id == 2:
-            return cls.LOWPASS
-        elif filter_id == 3 or filter_id == 4:
-            return cls.HIGHPASS
-        elif filter_id == 5:
-            return cls.BITCRUSH
-        elif filter_id == 6:
-            # TODO Figure out how effect 6 (and up?) is assigned.
-            return cls.PEAK
-        raise ValueError(f'unrecognized vox filter id {filter_id}')
-
-    def to_ksh_name(self):
         if self == self.PEAK:
-            return 'peak'
+            return 0
         elif self == self.LOWPASS:
-            return 'lpf1'
+            return 1 # or 2
         elif self == self.HIGHPASS:
-            return 'hpf1'
+            return 3 # or 4
         elif self == self.BITCRUSH:
-            return 'bitc'
+            return 5
+        elif self == self.PEAK:
+            # TODO Figure out how effect 6 (and up?) is assigned.
+            return 6
+        raise ValueError(f'unrecognized vox filter id {self}')
+
+    @classmethod
+    def from_ksh_name(cls, ksh_name):
+        if ksh_name == 'peak':
+            return cls.PEAK
+        elif ksh_name == 'lpf1':
+            return cls.LOWPASS
+        elif ksh_name == 'hpf1':
+            return cls.HIGHPASS
+        elif ksh_name == 'bitc':
+            return cls.BITCRUSH
 
     PEAK = auto()
     LOWPASS = auto()
     HIGHPASS = auto()
     BITCRUSH = auto()
 
+# TODO what uhhhhh the fuck is any of this
 class KshEffectDefine:
     def __init__(self):
         self.effect = None
@@ -446,8 +440,9 @@ class LaserNode:
         if self.position < 0 or self.position > 127:
             raise ValueError(f'position {self.position} is out of bounds')
 
-    def position_ksh(self):
-        """ Convert the position from the 7-bit scale to whatever the hell KSM is using. """
+    @staticmethod
+    def position_ksh(position):
+        """ Convert the position from whatever the hell KSM is using to the 7-bit scale. """
         chars = []
         for char in range(10):
             chars.append(chr(ord('0') + char))
@@ -455,8 +450,8 @@ class LaserNode:
             chars.append(chr(ord('A') + char))
         for char in range(15):
             chars.append(chr(ord('a') + char))
-        idx = math.ceil((self.position / 127) * (len(chars) - 1))
-        return chars[idx]
+        idx = chars.index(position)
+        return (idx / (len(chars) - 1)) * 127
 
 class LaserSlam:
     class Direction(Enum):
@@ -536,24 +531,22 @@ class TiltMode(Enum):
     BIGGER = auto()
     KEEP_BIGGER = auto()
 
-    @classmethod
-    def from_vox_id(cls, vox_id):
-        if vox_id == 0:
-            return cls.NORMAL
-        elif vox_id == 1:
-            return cls.BIGGER
-        elif vox_id == 2:
-            return cls.KEEP_BIGGER
-        return None
-
-    def to_ksh_name(self):
+    def to_vox_id(self):
         if self == self.NORMAL:
-            return 'normal'
+            return 0
         elif self == self.BIGGER:
-            return 'bigger'
+            return 1
         elif self == self.KEEP_BIGGER:
-            return 'keep_bigger'
-        return None
+            return 2
+
+    @classmethod
+    def from_ksh_name(cls, ksh_name):
+        if ksh_name == 'normal':
+            return cls.NORMAL
+        elif ksh_name == 'bigger':
+            return cls.BIGGER
+        elif ksh_name == 'keep_bigger':
+            return cls.KEEP_BIGGER
 
 class StopEvent:
     moment: Timing
@@ -570,76 +563,58 @@ class EventKind(Enum):
 class Background:
     # As of 2020-01-12, using the definitions from Lasergame.
     @staticmethod
-    def from_vox_id(vox_id):
-        """ Get the KSH name of the background corresponding to the ID. """
-        if vox_id == 0 or vox_id == 1 or 14 <= vox_id == 16 or vox_id == 71:
-            return 'techno'
-        elif vox_id == 2 or vox_id == 6 or 11 <= vox_id <= 13:
-            return 'wave'
-        elif vox_id == 3 or vox_id == 7:
-            return 'arrow'
-        elif vox_id == 4 or vox_id == 8:
-            # TODO It's kinda a pink version of 'wave'
-            return 'sakura'
-        elif vox_id == 63:
-            return 'smoke'
-        elif vox_id == 65:
-            return 'snow'
-        return 'fallback'
+    def to_vox_id(ksh_id):
+        if ksh_id == 'techno':
+            return 0 # or 1, or 14..16, or 71
+        elif ksh_id == 'wave':
+            return 2 # or 6, or 11..13
+        elif ksh_id == 'arrow':
+            return 3 # or 7
+        elif ksh_id == 'sakura':
+            # TODO It should've been kinda a pink version of 'wave'
+            return 4 # or 8
+        elif ksh_id == 'smoke':
+            return 63
+        elif ksh_id == 'snow':
+            return 65
 
-class KshLineBuf:
+class KshLine:
     """ Represents a single line of notes in KSH (along with effect assignment lines) """
     class ButtonState(Enum):
         NONE = auto()
         PRESS = auto()
         HOLD = auto()
 
-    def __init__(self):
+    def __init__(self, line):
+        buttons, fx, lasers_and_spin = line.split('|')
+
         self.buttons = {}
+        for bt, state in zip([ Button.BT_A, Button.BT_B, Button.BT_C, Button.BT_D ], buttons):
+            if state == '2':
+                self.buttons[bt] = self.ButtonState.HOLD
+            elif state == '1':
+                self.buttons[bt] = self.ButtonState.PRESS
+            else:
+                self.buttons[bt] = self.ButtonState.NONE
+
+        for bt, state in zip([ Button.FX_L, Button.FX_R ], fx):
+            if state == '2':
+                self.buttons[bt] = self.ButtonState.HOLD
+            elif state == '1':
+                self.buttons[bt] = self.ButtonState.PRESS
+            else:
+                self.buttons[bt] = self.ButtonState.NONE
+
+        lasers = lasers_and_spin[:2]
+        spin = lasers_and_spin[2:]
+
         self.lasers = {}
-        self.spin = ''
-        self.meta = []
+        for laser, state in zip([ LaserSide.LEFT, LaserSide.RIGHT ], lasers):
+            self.lasers[laser] = state
 
-        for bt in Button:
-            self.buttons[bt] = self.ButtonState.NONE
+        self.spin = spin
 
-        for side in LaserSide:
-            self.lasers[side] = '-'
-
-    def out(self):
-        buf = ''
-
-        for m in self.meta:
-            buf += m + '\n'
-
-        for bt in [ Button.BT_A, Button.BT_B, Button.BT_C, Button.BT_D ]:
-            if self.buttons[bt] == self.ButtonState.HOLD:
-                buf += '2'
-            elif self.buttons[bt] == self.ButtonState.PRESS:
-                buf += '1'
-            else:
-                buf += '0'
-
-        buf += '|'
-
-        for bt in [ Button.FX_L, Button.FX_R ]:
-            if self.buttons[bt] == self.ButtonState.HOLD:
-                buf += '1'
-            elif self.buttons[bt] == self.ButtonState.PRESS:
-                buf += '2'
-            else:
-                buf += '0'
-
-        buf += '|'
-
-        for laser in [ LaserSide.LEFT, LaserSide.RIGHT ]:
-            buf += self.lasers[laser]
-
-        buf += self.spin
-
-        return buf
-
-class Vox:
+class Ksh:
     class State(Enum):
         @classmethod
         def from_token(cls, token):
@@ -690,17 +665,17 @@ class Vox:
         SPCONTROLLER = auto()
 
     def __init__(self):
-        self.voxfile = None
+        self.kshfile = None
         self.source_file_name = None
         self.ascii = None
         self.game_id = 0
         self.song_id = 0
-        self.vox_version = 0
+        self.ksh_version = 0
         self.vox_defines = {} # defined in the vox file
-        self.effect_defines = {} # will be defined in the ksh file
+        self.ksh_defines = {} # will be defined in the ksh file
         self.effect_fallback = KshEffectDefine.default_effect()
         self.end = None
-        self.events = {}
+        self.events = defaultdict(dict)
 
         self.last_time = Timing(1, 1, 0)
         self.new_laser = False
@@ -709,16 +684,13 @@ class Vox:
         self.state_track = 0
         self.stop_point = None
 
-        self.metadata: ElementTree = None
+        self.metadata = dict()
         self.difficulty = None
         self.difficulty_idx = 0
 
         self.finalized = False
 
         self.required_chip_sounds = set()
-
-    def __str__(self):
-        return f'{self.ascii} {self.diff_token()}'
 
     def diff_token(self):
         return str(self.difficulty_idx) + self.difficulty.to_letter()
@@ -752,10 +724,6 @@ class Vox:
             return int(int(self.get_metadata('bpm_min')) / 100)
         else:
             return f'{int(int(self.get_metadata("bpm_min")) / 100)}-{int(int(self.get_metadata("bpm_max")) / 100)}'
-
-    def timing_point(self, timing):
-        if timing not in self.events:
-            self.events[timing] = {}
 
     def get_real_difficulty(self) -> str:
         if self.difficulty == Difficulty.INFINITE:
@@ -815,579 +783,207 @@ class Vox:
     def from_file(cls, path):
         global args
 
-        parser = Vox()
+        parser = Ksh()
 
-        file = open(path, 'r', encoding='cp932')
-        parser.voxfile = file
+        file = open(path, 'r')
+        parser.kshfile = file
         parser.source_file_name = os.path.split(path)[-1]
-
-        filename_array = os.path.basename(path).split('_')
-        for file in glob(f'{args.db_dir}/*.xml') if args.multi_db else [f'{args.db_dir}/music_db.xml']:
-            with open(file, encoding='cp932') as db:
-                try:
-                    parser.game_id = int(filename_array[0])
-                    parser.song_id = int(filename_array[1])
-                    parser.difficulty = Difficulty.from_letter(os.path.splitext(path)[0][-1])
-                    parser.difficulty_idx = os.path.splitext(path)[0][-2]
-                except ValueError:
-                    raise VoxLoadError(parser.voxfile.name, f'unable to parse difficulty from file name "{path}"')
-
-                tree = ElementTree.fromstring(db.read()).findall('''.//music[@id='{}']'''.format(parser.song_id))
-
-                if len(tree) > 0:
-                    parser.metadata = tree[0]
-                    break
-
-        if parser.metadata is None:
-            raise VoxLoadError(parser.voxfile.name, f'unable to find metadata for song')
-
-        parser.ascii = parser.get_metadata('ascii')
 
         return parser
 
     def parse(self):
         line_no = 0
-        section_line_no = 0
-
-        for line in self.voxfile:
-            section_line_no += 1
+        is_metadata = True
+        now = Timing(0, 1, 0)
+        timesig = TimeSignature(4, 4)
+        for line in self.kshfile:
             line_no += 1
             debug().current_line_num = line_no
 
-            line = line.strip()
+            line = line.strip().lstrip('\ufeff') # fucking BOM
 
             if line.startswith('//'):
                 continue
 
-            if line.startswith('#'):
-                token_state = self.State.from_token(line.split('#')[1])
-                if token_state is None:
-                    continue
-                if type(token_state) is tuple:
-                    self.state = token_state[0]
-                    self.state_track = int(token_state[1])
-                else:
-                    self.state = token_state
-                section_line_no = 0
+            if line == '--' and is_metadata:
+                is_metadata = False
 
-            elif line.startswith('define\t'):
-                splitted = line.split('\t')
-                if len(splitted) != 3:
-                    debug().record(Debug.Level.WARNING, 'fx_define', f'define line "{line}" does not have 3 operands')
-                    continue
+            if is_metadata:
+                key, value = line.split('=', 1)
+                self.metadata[key] = value
+                continue
 
-                self.vox_defines[splitted[1]] = int(splitted[2])
-                if int(splitted[2]) != 0:
-                    self.effect_defines[int(splitted[2])] = KshEffectDefine.from_pre_v4_vox_sound_id(int(splitted[2]))
+            if line == '--':
+                now = Timing(now.measure + 1, 1, 0)
+                laser_range = {LaserSide.LEFT: 1, LaserSide.RIGHT: 1}
+            elif line.startswith('beat='):
+                _, sig = line.split('=')
+                top, bottom = sig.split('/')
+                timesig = TimeSignature(int(top), int(bottom))
+                self.events[now][EventKind.TIMESIG] = timesig
+            elif line.startswith('t='):
+                _, val = line.split('=')
+                self.events[now][EventKind.BPM] = float(val)
+            elif line.startswith('stop='):
+                _, stop = line.split('=')
+                self.events[now][EventKind.STOP] = int(stop)
+            elif line.startswith('tilt='):
+                _, tilt = line.split('=')
+                self.events[now][EventKind.TILTMODE] = TiltMode.from_ksh_name(tilt)
+            #elif SpcParam.from_ksh_name(line.split('=')[0]) is not None:
+            #    raise NotImplementedError('SP Controller things are over my head')
+            elif '=' in line:
+                raise NotImplementedError('what even is a ' + line)
+            else:
+                ksh_line = KshLine(line)
+                slam = False
+                roll_kind = None
+                direction = None
+                if ksh_line.spin != '':
+                    slam = True
+                    roll_kind_code = ksh_line.spin[1]
+                    if roll_kind_code in '()':
+                        roll_kind = RollKind.MEASURE # or something
+                        if roll_kind_code == '(':
+                            direction = LaserSlam.Direction.LEFT
+                        else:
+                            direction = LaserSlam.Direction.RIGHT
+                    elif roll_kind_code in '<>':
+                        roll_kind = RollKind.SWING
+                        if roll_kind_code == '<':
+                            direction = LaserSlam.Direction.LEFT
+                        else:
+                            direction = LaserSlam.Direction.RIGHT
+                for side in LaserSide:
+                    if ksh_line.lasers[side] not in '-:': # TODO figure out what to do about :
+                        track = side.to_track_num()
+                        laser = LaserNode.Builder()
+                        laser.side = side
+                        laser.position = LaserNode.position_ksh(ksh_line.lasers[side])
+                        laser.node_type = LaserCont.START
+                        if slam:
+                            laser.roll_kind = roll_kind
+                            laser_start = LaserNode(laser)
+                            laser.position += -1 if direction == LaserSlam.Direction.LEFT else 1
+                            laser.node_type = LaserCont.END
+                            laser_end = LaserNode(laser)
+                            event = LaserSlam(laser_start, laser_end) # TODO what uhhh the fuck, TODO persist for later
+                            self.events[now][(EventKind.TRACK, track)] = event
+                        else:
+                            laser = LaserNode(laser)
+                            self.events[now][(EventKind.TRACK, track)] = laser
+                for button in Button:
+                    if ksh_line.buttons[button] == KshLine.ButtonState.HOLD:
+                        event = ButtonPress(button, 69, 3) # TODO get duration, TODO effects
+                        self.events[now][(EventKind.TRACK, button.to_track_num())] = event
+                    elif ksh_line.buttons[button] == KshLine.ButtonState.PRESS:
+                        self.events[now][(EventKind.TRACK, button.to_track_num())] = ButtonPress(button, 0, 3) # TODO effects
+                now.add(1, timesig)
 
-            elif self.state is not None:
-                self.process_state(line, section_line_no)
+        # TODO effect defines
 
         self.finalized = True
 
-    def process_state(self, line, section_line_num):
-        splitted = line.split('\t')
+    def write_to_vox(self, jacket_idx=None, using_difficulty_audio=None, file=sys.stdout):
+        def p(*args, **kwargs):
+            print(*args, **kwargs, file=file)
 
-        if line == '':
-            return
+        p('// made by ksh2vox')
+        p('')
 
-        now = Timing.from_time_str(splitted[0])
-        if now is not None:
-            self.timing_point(now)
+        p('#FORMAT VERSION')
+        p('10')
+        p('#END')
+        p('')
 
-        if self.state == self.State.FORMAT_VERSION:
-            self.vox_version = int(line)
+        p('#BEAT INFO')
+        for now, events in self.events.items():
+            if EventKind.TIMESIG in events:
+                event = events[EventKind.TIMESIG]
+                p(f'{now.to_time_str()}\t{event.top}\t{event.bottom}')
+        p('#END')
+        p('')
 
-        elif self.state == self.State.BEAT_INFO:
-            timesig = TimeSignature(int(splitted[1]), int(splitted[2]))
-            self.events[now][EventKind.TIMESIG] = timesig
+        p('#BPM INFO')
+        for now, events in self.events.items():
+            if EventKind.BPM in events:
+                # TODO what the fuck is a stop event
+                bpm = events[EventKind.BPM]
+                p(f'{now.to_time_str()}\t{bpm}\t4')
+        p('#END')
+        p('')
 
-        elif self.state == self.State.BPM:
-            now = Timing(1, 1, 0)
-            self.timing_point(now)
-            try:
-                self.events[now][EventKind.BPM] = float(line)
-            except ValueError:
-                # Jomanda adv seems to have the string "BAROFF" at one point.
-                debug().record_last_exception(Debug.Level.ABNORMALITY, tag='bpm_parse')
+        p('#TILT MODE INFO')
+        for now, events in self.events.items():
+            if EventKind.TILTMODE in events:
+                mode = events[EventKind.TILTMODE].to_vox_id()
+                p(f'{now.to_time_str()}\t{mode}')
+        p('#END')
+        p('')
 
-        elif self.state == self.State.BPM_INFO:
-            if splitted[2].endswith('-'):
-                # There is a stop.
-                self.stop_point = StopEvent()
-                self.stop_point.moment = now
-                last_timesig = None
+        p('#END POSITION')
+        end = max(self.events.keys())
+        p(f'{end.to_time_str()}')
+        p('#END')
+        p('')
 
-                for t, e in self.time_iter(Timing(1, 1, 0), self.events[Timing(1, 1, 0)][EventKind.TIMESIG]):
-                    if t.measure > MAX_MEASURES:
-                        # When parsing a Stop event, the end of the chart may not yet be parsed, so we make an
-                        # assumption for how long a chart could possibly be.
-                        break
+        # TODO tab effects
 
-                    if e is not None and EventKind.TIMESIG in e:
-                        last_timesig = e[EventKind.TIMESIG]
-                    if e is not None and t == now:
-                        self.stop_point.timesig = last_timesig
+        # TODO fx button effects
 
-                if self.stop_point.timesig is None:
-                    raise VoxParseError('bpm_info', 'unable to find end for stop event')
-            else:
-                if self.stop_point is not None:
-                    self.events[self.stop_point.moment][EventKind.STOP] = now.diff(
-                        self.stop_point.moment, self.stop_point.timesig)
-                    self.stop_point = None
-                if splitted[2] != '4' and splitted[2] != '4-':
-                    debug().record(Debug.Level.ABNORMALITY, 'bpm_info', f'non-4 beat division in bpm info: {splitted[2]}')
-                self.events[now][EventKind.BPM] = float(splitted[1])
+        # TODO tab param assigns
 
-        elif self.state == self.State.TILT_INFO:
-            try:
-                self.events[now][EventKind.TILTMODE] = TiltMode.from_vox_id(int(splitted[1]))
-            except ValueError:
-                debug().record_last_exception(level=Debug.Level.WARNING)
-
-        elif self.state == self.State.END_POSITION:
-            self.end = now
-
-        elif self.state == self.State.SOUND_ID:
-            # The `define` handler takes care of this outside of this loop.
-            debug().record(Debug.Level.WARNING,
-                         'vox_parse',
-                         f'({self.state}) line other than a #define was encountered in SOUND ID')
-
-        elif self.state == self.State.TAB_EFFECT:
-            # TODO Tab effects
-            if TabEffectInfo.line_is_abnormal(section_line_num, line):
-                debug().record(Debug.Level.ABNORMALITY, 'tab_effect', f'tab effect info abnormal: {line}')
-
-        elif self.state == self.State.FXBUTTON_EFFECT:
-            if self.vox_version < 6:
-                # Below v6, the defines come one after another with no spacing between other than the newline.
-                try:
-                    self.effect_defines[section_line_num - 1] = KshEffectDefine.from_effect_info_line(line)
-                except ValueError:
-                    self.effect_defines[section_line_num - 1] = KshEffectDefine.default_effect()
-                    debug().record_last_exception(tag='fx_load')
-            else:
-                if (section_line_num - 1) % 3 < 2:
-                    # The < 2 condition will allow the second line to override the first.
-                    if line.isspace():
-                        debug().record(Debug.Level.WARNING, 'fx_load', 'fx effect info line is blank')
-                    elif splitted[0] != '0,':
-                        index = int(section_line_num / 3)
-                        try:
-                            self.effect_defines[index] = KshEffectDefine.from_effect_info_line(line)
-                        except ValueError:
-                            self.effect_defines[index] = KshEffectDefine.default_effect()
-                            debug().record_last_exception(level=Debug.Level.WARNING, tag='fx_load')
-
-        elif self.state == self.State.TAB_PARAM_ASSIGN:
-            if TabParamAssignInfo.line_is_abnormal(line):
-                debug().record(Debug.Level.ABNORMALITY, 'tab_param_assign', f'tab param assign info abnormal: {line}')
-
-        elif self.state == self.State.SPCONTROLLER:
-            try:
-                param = SpcParam.from_vox_name(splitted[1])
-            except ValueError:
-                debug().record_last_exception(tag='spcontroller_load')
-                return
-
-            if param is not None:
-                try:
-                    self.events[now][(EventKind.SPCONTROLLER, param)] = CameraNode(
-                        float(splitted[4]), float(splitted[5]), int(splitted[3]))
-                except ValueError:
-                    # Just record it as an abnormality.
-                    pass
-
-            if SpcParam.line_is_abnormal(param, splitted):
-                debug().record(Debug.Level.ABNORMALITY, 'spcontroller_load', 'spcontroller line is abnormal')
-
-        elif self.state == self.state.TRACK:
-            if self.state_track == 1 or self.state_track == 8:
-                laser_node = LaserNode.Builder()
-                laser_node.side = LaserSide.LEFT if self.state_track == 1 else LaserSide.RIGHT
-                laser_node.position = int(splitted[1])
-                laser_node.node_type = LaserCont(int(splitted[2]))
-                try:
-                    laser_node.roll_kind = next(iter([r for r in RollKind if r.value == int(splitted[3])]))
-                except StopIteration:
-                    if splitted[3] != '0':
-                        debug().record(Debug.Level.ABNORMALITY, 'roll_parse', f'roll type: {splitted[3]}')
-
-                if len(splitted) > 4:
-                    try:
-                        laser_node.filter = KshFilter.from_vox_filter_id(int(splitted[4]))
-                    except ValueError:
-                        debug().record_last_exception(tag='laser_load')
-
-                if len(splitted) > 5:
-                    laser_node.range = int(splitted[5])
-
-                laser_node = LaserNode(laser_node)
-
-                # Check if it's a slam.
-                if (EventKind.TRACK, self.state_track) in self.events[now]:
-                    self.new_laser = False
-                else:
-                    self.new_laser = True
-
-                if not (EventKind.TRACK, self.state_track) in self.events[now]:
-                    self.events[now][(EventKind.TRACK, self.state_track)] = laser_node
-                else:
-                    slam_start = self.events[now][(EventKind.TRACK, self.state_track)]
-                    if type(slam_start) is LaserSlam:
-                        # A few charts have three laser nodes at the same time point for some reason.
-                        slam_start = slam_start.end
-                    try:
-                        slam = LaserSlam(slam_start, laser_node)
-                    except ValueError:
-                        debug().record_last_exception(Debug.Level.WARNING, tag='slam_parse')
-                        return
-                    self.events[now][(EventKind.TRACK, self.state_track)] = slam
-
-            else:
-                try:
-                    button = Button.from_track_num(self.state_track)
-                except ValueError:
-                    debug().record_last_exception(tag='button_load')
-                    return
-
-                if button is None:
-                    # Ignore track 9 buttons.
-                    return
-
-                fx_data = None
-                duration = int(splitted[1])
-                if button.is_fx():
-                    # Process effect assignment.
-                    if duration > 0:
-                        # Fx hold.
-                        if self.vox_version < 4:
-                            fx_data = int(splitted[3]) if splitted[3].isdigit() else int(self.vox_defines[splitted[3]])
-                        else:
-                            if 2 <= int(splitted[2]) <= 13:
-                                # It's a regular effect.
-                                fx_data = int(splitted[2]) - 2
-                            elif int(splitted[2]) == 254:
-                                debug().record(Debug.Level.WARNING,
-                                             'button_fx',
-                                             'reverb effect is unimplemented, using fallback')
-                                fx_data = -1
-                            else:
-                                debug().record(Debug.Level.WARNING,
-                                             'button_fx',
-                                             'out of bounds fx index for FX hold, using fallback')
-                                fx_data = -1
+        def laser_track(i):
+            p('#TRACK' + str(i))
+            for now, events in self.events.items():
+                if (EventKind.TRACK, i) in events:
+                    event = events[(EventKind.TRACK, i)]
+                    if isinstance(event, LaserSlam):
+                        lasers = [event.start, event.end]
                     else:
-                        # Fx chip, check for sound.
-                        if self.vox_version >= 9:
-                            sound_id = int(splitted[2])
-                            if sound_id != -1 and sound_id != 255 and (sound_id >= FX_CHIP_SOUND_COUNT or sound_id < 0):
-                                debug().record(Debug.Level.WARNING,
-                                             'chip_sound_parse',
-                                             f'unhandled chip sound id {sound_id}')
-                            elif 1 <= sound_id < FX_CHIP_SOUND_COUNT:
-                                fx_data = sound_id
-                                self.required_chip_sounds.add(sound_id)
-
-                self.events[now][(EventKind.TRACK, self.state_track)] = ButtonPress(button, int(splitted[1]), fx_data)
-
-
-    def write_to_ksh(self, jacket_idx=None, using_difficulty_audio=None, file=sys.stdout):
-        global args
-
-        track_basename = f'track_{self.difficulty.to_abbreviation()}{AUDIO_EXTENSION}' if using_difficulty_audio else \
-            f'track{AUDIO_EXTENSION}'
-        jacket_basename = '' if jacket_idx is None else f'jacket_{jacket_idx}.png'
-
-        track_bg = Background.from_vox_id(int(self.get_metadata('bg_no')))
-
-        header = f'''// Source: {self.source_file_name}
-// Created by vox2ksh-{os.popen('git rev-parse HEAD').read()[:8].strip()}.
-title={self.get_metadata('title_name')}
-artist={self.get_metadata('artist_name')}
-effect={self.get_metadata('effected_by', True)}
-sorttitle={self.get_metadata('title_yomigana')}
-sortartist={self.get_metadata('artist_yomigana')}
-jacket={jacket_basename}
-illustrator={self.get_metadata('illustrator', True)}
-difficulty={self.difficulty.to_ksh_name()}
-level={self.get_metadata('difnum', True)}
-t={self.bpm_string()}
-m={track_basename}
-mvol={self.get_metadata('volume')}
-o=0
-bg={track_bg}
-layer={track_bg}
-po={int(config['Audio']['hidden_preview_position']) * 1000}
-plength=11000
-pfiltergain={KSH_DEFAULT_FILTER_GAIN}
-filtertype=peak
-chokkakuautovol=0
-chokkakuvol={KSH_DEFAULT_SLAM_VOL}
-ver=167'''
-
-        print(header, file=file)
-
-        print('--', file=file)
-
-        class SpControllerCountdown(dataobject):
-            event: CameraNode
-            time_left: int
-
-        # Below begins the main printing loop.
-        # We iterate through each tick of the song and print a KSH line. If there are events, we put stuff on that line.
-
-        # The currently active BT holds.
-        holds = {}
-
-        # The currently active SpController nodes.
-        ongoing_spcontroller_events = {p: None for p in SpcParam}
-
-        # Whether there is an ongoing laser on either side.
-        lasers = {s: None for s in LaserSide}
-        slam_status = {}
-        last_laser_timing = {s: None for s in LaserSide}
-        last_filter = KshFilter.PEAK
-        current_timesig = self.events[Timing(1, 1, 0)][EventKind.TIMESIG]
-        debug().current_line_num = len(header.split('\n')) + 1
-
-        measure_iter = range(self.end.measure)
-
-        for m in measure_iter:
-            measure = m + 1
-
-            now = Timing(measure, 1, 0)
-
-            # Laser range resets every measure in ksh.
-            laser_range = {LaserSide.LEFT: 1, LaserSide.RIGHT: 1}
-
-            if now in self.events and EventKind.TIMESIG in self.events[now]:
-                current_timesig = self.events[now][EventKind.TIMESIG]
-                print(f'beat={current_timesig.top}/{current_timesig.bottom}', file=file)
-
-            for b in range(current_timesig.top):
-                # Vox beats are also 1-indexed.
-                beat = b + 1
-
-                print(f'// #{measure},{beat}', file=file)
-
-                for o in range(int(float(TICKS_PER_BEAT) * (4 / current_timesig.bottom))):
-                    # However, vox offsets are 0-indexed.
-
-                    now = Timing(measure, beat, o)
-
-                    buffer = KshLineBuf()
-
-                    if now in self.events:
-                        for kind, event in self.events[now].items():
-                            if kind == EventKind.TIMESIG and (beat != 1 or o != 0):
-                                raise KshConvertError('time signature change in the middle of a measure')
-
-                            elif kind == EventKind.BPM:
-                                event: float
-                                buffer.meta.append(f't={str(event).rstrip("0").rstrip(".").strip()}')
-
-                            elif kind == EventKind.STOP:
-                                event: int
-                                buffer.meta.append(f'stop={event}')
-
-                            elif type(kind) is tuple and kind[0] == EventKind.SPCONTROLLER:
-                                event: CameraNode
-                                cam_param: SpcParam = kind[1]
-                                if cam_param.to_ksh_value() is not None:
-                                    if ongoing_spcontroller_events[cam_param] is not None and ongoing_spcontroller_events[cam_param].time_left != 0:
-                                        debug().record(Debug.Level.WARNING, 'spnode_output', f'spcontroller node at {now} interrupts another of same kind ({cam_param})')
-                                    ongoing_spcontroller_events[cam_param] = SpControllerCountdown(event=event, time_left=event.duration)
-                                    buffer.meta.append(f'{cam_param.to_ksh_name()}={cam_param.to_ksh_value(event.start_param)}')
-                                elif cam_param.is_state():
-                                    buffer.meta.append(f'{cam_param.to_ksh_name()}={event.duration}')
-
-                            elif kind == EventKind.TILTMODE:
-                                event: TiltMode
-                                buffer.meta.append(f'tilt={event.to_ksh_name()}')
-
-                            elif type(kind) is tuple and kind[0] == EventKind.TRACK:
-                                if kind[1] == 1 or kind[1] == 8:
-                                    # Laser
-                                    if type(event) is LaserSlam:
-                                        event: LaserSlam
-                                        # TODO Laser countdown for different timesigs
-                                        laser = event.start
-
-                                        if event.side in map(lambda x: x.side(), slam_status):
-                                            raise KshConvertError('new laser node spawn while trying to resolve slam')
-
-                                        slam_status[event] = SLAM_TICKS
-
-                                        if laser.roll_kind is not None:
-                                            if buffer.spin != '':
-                                                debug().record(Debug.Level.WARNING, 'ksh_laser', 'spin on both lasers')
-
-                                            if laser.roll_kind.value <= 3:
-                                                buffer.spin = '@'
-                                                if event.direction() == LaserSlam.Direction.LEFT:
-                                                    buffer.spin += '('
-                                                else:
-                                                    buffer.spin += ')'
-
-                                                # My assumption right now is that the MEASURE kind will always take one
-                                                # measure's worth of ticks. Likewise for the other ones.
-                                                if laser.roll_kind == RollKind.MEASURE:
-                                                    buffer.spin += str(int(current_timesig.top * current_timesig.ticks_per_beat() * 0.85))
-                                                elif laser.roll_kind == RollKind.HALF_MEASURE:
-                                                    buffer.spin += str(int((current_timesig.top * current_timesig.ticks_per_beat()) / 2.95))
-                                                elif laser.roll_kind == RollKind.THREE_BEAT:
-                                                    buffer.spin += str(int((current_timesig.top * current_timesig.ticks_per_beat()) * 0.62))
-
-                                            elif laser.roll_kind == RollKind.CANCER:
-                                                # TODO This roll.
-                                                buffer.spin = '@'
-                                                if event.direction() == LaserSlam.Direction.LEFT:
-                                                    buffer.spin += '('
-                                                else:
-                                                    buffer.spin += ')'
-                                                buffer.spin += str(current_timesig.top * current_timesig.ticks_per_beat() * 2)
-                                            elif laser.roll_kind == RollKind.SWING:
-                                                buffer.spin = '@'
-                                                if event.direction() == LaserSlam.Direction.LEFT:
-                                                    buffer.spin += '<'
-                                                else:
-                                                    buffer.spin += '>'
-                                                buffer.spin += str(int((current_timesig.top * current_timesig.ticks_per_beat()) * 0.62))
-
-                                        # noinspection PyUnusedLocal
-                                        event: LaserNode = event.start
-
-                                    event: LaserNode
-
-                                    # KSH defines anything less than a 32th to be a slam, but some vox files
-                                    # have nodes less than a 32th apart from each other. To counter this, we
-                                    # just push laser nodes a tick forward until they're more than a 32th
-                                    # apart.
-                                    skip_laser = False
-                                    thirtysecondth_ticks = int((4 * int(float(TICKS_PER_BEAT) * (4.0 / current_timesig.bottom))) / 32)
-                                    if last_laser_timing[event.side] is not None and now.diff(last_laser_timing[event.side], current_timesig) == thirtysecondth_ticks:
-                                        # Push it a tick forward to avoid being interpreted as a slam.
-                                        if now.add(1, current_timesig) not in self.events:
-                                            self.events[now.add(1, current_timesig)] = {}
-                                        self.events[Timing(now.measure, now.beat, now.offset + 1)][kind] = event
-                                        skip_laser = True
-
-                                        # Look ahead and push other nodes forward.
-                                        no_more_pushes = False
-                                        while not no_more_pushes:
-                                            no_more_pushes = True
-                                            for i in range(6, 1, -1):
-                                                lookahead_timing = now.add(1, current_timesig).add(i, current_timesig)
-                                                if lookahead_timing in self.events and kind in self.events[lookahead_timing]:
-                                                    ev = self.events[lookahead_timing][kind]
-                                                    timing_plus_one = lookahead_timing.add(1, current_timesig)
-                                                    if timing_plus_one not in self.events:
-                                                        self.events[timing_plus_one] = {}
-                                                    self.events[Timing(lookahead_timing.measure, lookahead_timing.beat, lookahead_timing.offset + 1)][kind] = ev
-                                                    del self.events[lookahead_timing][kind]
-                                                    no_more_pushes = False
-
-                                    if event.range != 1:
-                                        buffer.meta.append(f'laserrange_{event.side.to_letter()}={event.range}x')
-                                        laser_range[event.side] = event.range
-
-                                    if event.node_cont != LaserCont.END and event.filter != last_filter:
-                                        if last_filter is None:
-                                            buffer.meta.append(f'pfiltergain={KSH_DEFAULT_FILTER_GAIN}')
-
-                                        if event.filter is None:
-                                            buffer.meta.append(f'pfiltergain=0')
-                                        else:
-                                            buffer.meta.append(f'filtertype={event.filter.to_ksh_name()}')
-
-                                        last_filter = event.filter
-
-                                    if not skip_laser:
-                                        if event.node_cont == LaserCont.START:
-                                            lasers[event.side] = True
-                                        elif event.node_cont == LaserCont.END:
-                                            lasers[event.side] = False
-                                        buffer.lasers[event.side] = event.position_ksh()
-
-                                    last_laser_timing[event.side] = now
-
-                                else:
-                                    # Button
-                                    event: ButtonPress
-                                    if event.duration != 0:
-                                        if event.button.is_fx():
-                                            letter = 'l' if event.button == Button.FX_L else 'r'
-                                            try:
-                                                if type(event.effect) is int:
-                                                    effect_string = self.effect_defines[event.effect].fx_change(event.effect, duration=event.duration) if event.effect >= 0 else self.effect_fallback.fx_change(EFFECT_FALLBACK_NAME)
-                                                else:
-                                                    effect_string = event.effect[0].to_ksh_name(event.effect[1])
-                                                buffer.meta.append(f'fx-{letter}={effect_string}')
-                                            except KeyError:
-                                                debug().record_last_exception(tag='button_fx')
-                                        buffer.buttons[event.button] = KshLineBuf.ButtonState.HOLD
-                                        holds[event.button] = event.duration
-                                    elif args.do_media:
-                                        # Check for a chip sound.
-                                        buffer.buttons[event.button] = KshLineBuf.ButtonState.PRESS
-                                        event.effect: int
-                                        if event.button.is_fx() and event.effect is not None:
-                                            letter = 'l' if event.button == Button.FX_L else 'r'
-                                            buffer.meta.append(f'fx-{letter}_se=fxchip_{event.effect}{FX_CHIP_SOUND_EXTENSION};{FX_CHIP_SOUND_VOL_PERCENT}')
-
-                    # Loop end stuff.
-                    for cam_param in [x for x in ongoing_spcontroller_events.keys() if ongoing_spcontroller_events[x] is not None]:
-                        if ongoing_spcontroller_events[cam_param].time_left == 0 and not cam_param.is_state():
-                            # SpController node ended and there's not another one after.
-                            event: CameraNode = ongoing_spcontroller_events[cam_param].event
-                            buffer.meta.append(f'{cam_param.to_ksh_name()}={cam_param.to_ksh_value(event.end_param)}')
-                            ongoing_spcontroller_events[cam_param] = None
+                        lasers = [event]
+                    for laser in lasers:
+                        position = laser.position
+                        node_type = laser.node_cont.value
+                        if laser.roll_kind is None:
+                            roll_kind = 0
                         else:
-                            ongoing_spcontroller_events[cam_param].time_left -= 1
+                            roll_kind = laser.roll_kind.value
+                        # TODO filter and range
+                        p(f'{now.to_time_str()}\t{position}\t{node_type}\t{roll_kind}')
+            p('#END')
+            p('')
 
-                    holds_temp = holds.copy()
-                    for button in holds.keys():
-                        if holds_temp[button] == 0:
-                            del holds_temp[button]
+        def button_track(i):
+            p('#TRACK' + str(i))
+            for now, events in self.events.items():
+                if (EventKind.TRACK, i) in events:
+                    event: ButtonPress = events[(EventKind.TRACK, i)]
+                    duration = event.duration
+                    if event.button.is_fx():
+                        if duration > 0:
+                            fx_data = event.effect + 2
                         else:
-                            buffer.buttons[button] = KshLineBuf.ButtonState.HOLD
-                            holds_temp[button] -= 1
-                    holds = holds_temp
+                            fx_data = event.effect
+                        p(f'{now.to_time_str()}\t{duration}\t{fx_data}')
+                    else:
+                        p(f'{now.to_time_str()}\t{duration}')
+            p('#END')
+            p('')
 
-                    for side in LaserSide:
-                        if buffer.lasers[side] == '-' and lasers[side]:
-                            buffer.lasers[side] = ':'
+        laser_track(1)
+        button_track(2)
+        button_track(3)
+        button_track(4)
+        button_track(5)
+        button_track(6)
+        button_track(7)
+        laser_track(8)
 
-                    for slam in reversed(list(slam_status.keys())):
-                        if slam_status[slam] == 0:
-                            buffer.lasers[slam.side()] = slam.end.position_ksh()
-                            del slam_status[slam]
-                            if slam.end.node_cont == LaserCont.END:
-                                lasers[slam.side()] = False
-                        else:
-                            if slam_status[slam] < SLAM_TICKS:
-                                buffer.lasers[slam.side()] = ':'
-                            slam_status[slam] -= 1
-
-                    out = buffer.out()
-
-                    print(out, file=file)
-
-                    debug().current_line_num += len(out.split('\n'))
-
-            print('--', file=file)
-
-            debug().current_line_num += 1
-
-        for k, v in self.effect_defines.items():
-            print(v.define_line(k), file=file)
-        print(self.effect_fallback.define_line(EFFECT_FALLBACK_NAME), file=file)
+        # TODO sp controller shit
 
     def close(self):
-        self.voxfile.close()
+        self.kshfile.close()
 
 
 METADATA_FIX = [
@@ -1452,38 +1048,39 @@ def thread_print(line):
         thread_id_index[threading.get_ident()] = len(thread_id_index) + 1
     print(f'{thread_id_index[threading.get_ident()]}> {line}')
 
-def do_process_voxfiles(files):
+def do_process_kshfiles(files):
     global args
 
     # Load source directory.
-    for vox_path in files:
+    for ksh_path in files:
         try:
             debug().state = Debug.State.INPUT
-            debug().input_filename = vox_path
+            debug().input_filename = ksh_path
             debug().output_filename = None
             debug().reset()
 
             # noinspection PyBroadException
             try:
-                vox = Vox.from_file(vox_path)
+                ksh = Ksh.from_file(ksh_path)
             except Exception:
-                debug().record_last_exception(level=Debug.Level.ERROR, tag='vox_load')
+                debug().record_last_exception(level=Debug.Level.ERROR, tag='ksh_load')
                 continue
 
-            thread_print(f'Processing "{vox_path}": {str(vox)}')
+            thread_print(f'Processing "{ksh_path}": {str(ksh)}')
 
             start_time = time.time()
 
             # First try to parse the file.
             try:
-                vox.parse()
+                ksh.parse()
             except Exception as e:
-                thread_print(f'Parsing vox file failed with "{str(e)}":\n{traceback.format_exc()}')
-                debug().record_last_exception(level=Debug.Level.ERROR, tag='vox_parse', trace=True)
+                thread_print(f'Parsing ksh file failed with "{str(e)}":\n{traceback.format_exc()}')
+                debug().record_last_exception(level=Debug.Level.ERROR, tag='ksh_parse', trace=True)
                 continue
 
             # Make the output directory.
-            song_dir = f'out/{vox.ascii}'
+            print(ksh.metadata)
+            song_dir = f'out/{to_path(ksh.metadata["title"])}'
             if not os.path.isdir(song_dir):
                 thread_print(f'Creating song directory "{song_dir}".')
                 os.mkdir(song_dir)
@@ -1492,30 +1089,30 @@ def do_process_voxfiles(files):
             using_difficulty_audio = None
 
             # Copy media files over.
-            if args.do_media:
-                using_difficulty_audio = do_copy_audio(vox, song_dir)
-                jacket_idx = do_copy_jacket(vox, song_dir)
+            #if args.do_media:
+            #    using_difficulty_audio = do_copy_audio(ksh, song_dir)
+            #    jacket_idx = do_copy_jacket(ksh, song_dir)
+#
+            #    # Copy FX chip sounds.
+            #    if len(ksh.required_chip_sounds) > 0:
+            #        do_copy_fx_chip_sounds(ksh, song_dir)
 
-                # Copy FX chip sounds.
-                if len(vox.required_chip_sounds) > 0:
-                    do_copy_fx_chip_sounds(vox, song_dir)
-
-            # Output the KSH chart.
-            chart_path = f'{song_dir}/chart_{vox.diff_abbreviation()}.ksh'
+            # Output the VOX chart.
+            chart_path = f'{song_dir}/{ksh.source_file_name}.vox'
 
             debug().output_filename = chart_path
             debug().state = Debug.State.OUTPUT
 
             if args.do_convert:
-                thread_print(f'Writing KSH data to "{chart_path}".')
+                thread_print(f'Writing VOX data to "{chart_path}".')
                 with open(chart_path, "w+", encoding='utf-8') as ksh_file:
                     try:
-                        vox.write_to_ksh(jacket_idx=jacket_idx,
+                        ksh.write_to_vox(jacket_idx=jacket_idx,
                                          using_difficulty_audio=using_difficulty_audio,
                                          file=ksh_file)
                     except Exception as e:
-                        print(f'Outputting to ksh failed with "{str(e)}"\n{traceback.format_exc()}\n')
-                        debug().record_last_exception(level=Debug.Level.ERROR, tag='ksh_output', trace=True)
+                        print(f'Outputting to vox failed with "{str(e)}"\n{traceback.format_exc()}\n')
+                        debug().record_last_exception(level=Debug.Level.ERROR, tag='vox_output', trace=True)
                         continue
                     duration = time.time() - start_time
                     if debug().has_issues():
@@ -1525,7 +1122,7 @@ def do_process_voxfiles(files):
                         thread_print(f'Finished conversion in {truncate(duration, 4)}s with no issues.')
             else:
                 thread_print(f'Skipping conversion step.')
-            vox.close()
+            ksh.close()
         except Exception as e:
             debug().record_last_exception(Debug.Level.ERROR, 'other', f'an error occurred: {str(e)}')
 
@@ -1550,7 +1147,7 @@ def do_copy_audio(vox, out_dir):
         thread_print(f'Found difficulty-specific audio "{src_audio_path}".')
 
     if not os.path.exists(src_audio_path):
-        raise VoxLoadError('no audio file found')
+        raise KshLoadError('no audio file found')
 
     if not os.path.exists(target_audio_path):
         thread_print(f'Copying audio file "{src_audio_path}" to song directory.')
@@ -1652,16 +1249,13 @@ def debug():
 
 args = None
 debugs = {}
-config = configparser.ConfigParser()
 
 def main():
-    global config
     if not os.path.exists('config.ini'):
         print('Please create a config.ini based off the provided sample.', file=sys.stderr)
         sys.exit(1)
-    config.read('config.ini')
     global args
-    argparser = argparse.ArgumentParser(description='Convert vox to ksh')
+    argparser = argparse.ArgumentParser(description='Convert ksh to vox')
     argparser.add_argument('-j', '--num-cores', default=1, type=int)
     argparser.add_argument('-t', '--testcase')
     argparser.add_argument('-i', '--song-id')
@@ -1669,12 +1263,12 @@ def main():
     argparser.add_argument('-n', '--no-media', action='store_false', dest='do_media')
     argparser.add_argument('-m', '--no-convert', action='store_false', dest='do_convert')
     argparser.add_argument('-x', '--no-merge-db', action='store_false', dest='multi_db')
-    argparser.add_argument('-V', '--vox-dir', default='D:/SDVX-Extract/vox')
-    argparser.add_argument('-D', '--db-dir', default='D:/SDVX-Extract/music_db')
-    argparser.add_argument('-A', '--audio-dir', default='D:/SDVX-Extract/song_prepared')
-    argparser.add_argument('-C', '--fx-chip-sound-dir', default='D:/SDVX-Extract/fx_chip_sound')
-    argparser.add_argument('-J', '--jacket-dir', default='D:/SDVX-Extract/jacket')
-    argparser.add_argument('-P', '--preview-dir', default='D:/SDVX-Extract/preview')
+    argparser.add_argument('-K', '--ksh-dir', default='D:/SDVX-Import/ksh')
+    argparser.add_argument('-D', '--db-dir', default='D:/SDVX-Import/music_db')
+    argparser.add_argument('-A', '--audio-dir', default='D:/SDVX-Import/song_prepared')
+    argparser.add_argument('-C', '--fx-chip-sound-dir', default='D:/SDVX-Import/fx_chip_sound')
+    argparser.add_argument('-J', '--jacket-dir', default='D:/SDVX-Import/jacket')
+    argparser.add_argument('-P', '--preview-dir', default='D:/SDVX-Import/preview')
     argparser.add_argument('-c', '--clean-output', action='store_true', dest='do_clean_output')
     argparser.add_argument('-e', '--clean-debug', action='store_true', dest='do_clean_debug')
     args = argparser.parse_args()
@@ -1704,13 +1298,13 @@ def main():
 
     candidates = []
 
-    print(f'Finding vox files.')
+    print(f'Finding ksh files.')
 
-    for filename in glob(f'{args.vox_dir}/*.vox'):
+    for filename in glob(f'{args.ksh_dir}/*.ksh'):
         import re
         if (args.song_id is None and args.testcase is None) or \
                 (args.song_id is not None and f'_{args.song_id.zfill(4)}_' in filename) or \
-                (args.testcase is not None and re.match(rf'^.*00[1-4]_0*{CASES[args.testcase][0]}_.*{CASES[args.testcase][1]}\.vox$', filename)):
+                (args.testcase is not None and re.match(rf'^.*00[1-4]_0*{CASES[args.testcase][0]}_.*{CASES[args.testcase][1]}\.ksh$', filename)):
             if args.song_difficulty is None or splitx(filename)[0][-1] == args.song_difficulty:
                 # See if this is overriding an earlier game's version of the chart.
                 try:
@@ -1745,7 +1339,7 @@ def main():
     global debugs
 
     for i in range(args.num_cores):
-        thread = threading.Thread(target=do_process_voxfiles, args=(groups[i],), name=f'Thread-{i}')
+        thread = threading.Thread(target=do_process_kshfiles, args=(groups[i],), name=f'Thread-{i}')
         threads.append(thread)
 
     print(f'Performing conversion across {args.num_cores} threads.')

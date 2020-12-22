@@ -1,6 +1,8 @@
-# vox2ksh
+# ksh2vox
 
-This converts `.vox` charts to `.ksh` charts. If you don't know what those are then this repo is not for you.
+This converts `.ksh` charts to `.vox` charts. If you don't know what those are then this repo is not for you.
+
+**This is half-assed bullshit based on the full-assed https://github.com/zacharied/vox2ksh, built by someone with no goddamn clue what ze's doing. Don't trust any of it to work.**
 
 ## Prerequisites
 
