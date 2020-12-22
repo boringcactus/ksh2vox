@@ -1,24 +1,20 @@
 #!/usr/bin/env python3.7
-from enum import Enum, auto
-from collections import defaultdict
-from glob import glob
-import threading
-import re
-from functools import total_ordering
-
-from recordclass import dataobject
-from xml.etree import ElementTree
-import traceback
-import random
-import math
-import shutil
-import time
-import configparser
-
-import sys, os
 import argparse
-
+from collections import defaultdict
+from dataclasses import dataclass
+from enum import Enum, auto
+from functools import total_ordering
+from glob import glob
+import math
+import os
 from os.path import splitext as splitx
+import re
+import shutil
+import sys
+import threading
+import time
+import traceback
+from xml.etree import ElementTree
 
 import ksh_effects
 
