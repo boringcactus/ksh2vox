@@ -37,8 +37,36 @@ FX_CHIP_SOUND_VOL_PERCENT = 27
 
 MAX_MEASURES = 999
 
+# lord forgive me
+HEPBURN_ROMANIZATION = """
+あ ア a \tい イ i \tう ウ u \tえ エ e \tお オ o
+か カ ka \tき キ ki \tく ク ku \tけ ケ ke \tこ コ ko \tきゃ キャ kya \tきゅ キュ kyu \tきょ キョ kyo
+さ サ sa \tし シ shi \tす ス su \tせ セ se \tそ ソ so \tしゃ シャ sha \tしゅ シュ shu \tしょ ショ sho
+た タ ta \tち チ chi \tつ ツ tsu \tて テ te \tと ト to \tちゃ チャ cha \tちゅ チュ chu \tちょ チョ cho
+な ナ na \tに ニ ni \tぬ ヌ nu \tね ネ ne \tの ノ no \tにゃ ニャ nya \tにゅ ニュ nyu \tにょ ニョ nyo
+は ハ ha \tひ ヒ hi \tふ フ fu \tへ ヘ he \tほ ホ ho \tひゃ ヒャ hya \tひゅ ヒュ hyu \tひょ ヒョ hyo
+ま マ ma \tみ ミ mi \tむ ム mu \tめ メ me \tも モ mo \tみゃ ミャ mya \tみゅ ミュ myu \tみょ ミョ myo
+や ヤ ya \tゆ ユ yu \tよ ヨ yo \t
+ら ラ ra \tり リ ri \tる ル ru \tれ レ re \tろ ロ ro \tりゃ リャ rya \tりゅ リュ ryu \tりょ リョ ryo
+わ ワ wa \tゐ ヰ i \tゑ ヱ e \tを ヲ o \t
+\tん ン n \t
+が ガ ga \tぎ ギ gi \tぐ グ gu \tげ ゲ ge \tご ゴ go \tぎゃ ギャ gya \tぎゅ ギュ gyu \tぎょ ギョ gyo
+ざ ザ za \tじ ジ ji \tず ズ zu \tぜ ゼ ze \tぞ ゾ zo \tじゃ ジャ ja \tじゅ ジュ ju \tじょ ジョ jo
+だ ダ da \tぢ ヂ ji \tづ ヅ zu \tで デ de \tど ド do \tぢゃ ヂャ ja \tぢゅ ヂュ ju \tぢょ ヂョ jo
+ば バ ba \tび ビ bi \tぶ ブ bu \tべ ベ be \tぼ ボ bo \tびゃ ビャ bya \tびゅ ビュ byu \tびょ ビョ byo
+ぱ パ pa \tぴ ピ pi \tぷ プ pu \tぺ ペ pe \tぽ ポ po \tぴゃ ピャ pya \tぴゅ ピュ pyu \tぴょ ピョ pyo
+"""
+
 def to_path(text):
-    return re.sub(r'[^\w]+', '_', text)
+    hepburn_rules = HEPBURN_ROMANIZATION.split('\n')
+    rules = [x.strip() for y in hepburn_rules for x in y.split('\t') if len(x.strip()) > 0]
+    for rule in rules:
+        pieces = rule.split(' ')
+        if len(pieces) != 3:
+            continue
+        hiragana, katakana, rōmaji = pieces
+        text = text.replace(hiragana, rōmaji).replace(katakana, rōmaji)
+    return re.sub(r'[^\w]+', '_', text, flags=re.UNICODE)
 
 class Debug:
     class State(Enum):
@@ -632,6 +660,12 @@ class Ksh:
     def diff(self):
         return Difficulty.from_ksh_name(self.metadata['difficulty'])
 
+    def vox_name(self):
+        title = to_path(self.metadata['title'])
+        artist = to_path(self.metadata['artist'])
+        difficulty = Difficulty.from_ksh_name(self.metadata['difficulty']).to_letter()
+        return f'{title}_{artist}_{difficulty}.vox'
+
     @classmethod
     def from_file(cls, path):
         global args
@@ -880,7 +914,7 @@ def do_process_kshfiles(files):
                 os.mkdir(song_dir)
 
             # Output the VOX chart.
-            chart_path = f'{song_dir}/{ksh.source_file_name}.vox'
+            chart_path = f'{song_dir}/{ksh.vox_name()}'
 
             debug().output_filename = chart_path
             debug().state = Debug.State.OUTPUT
