@@ -595,9 +595,9 @@ class KshLine:
                 self.buttons[bt] = self.ButtonState.NONE
 
         for bt, state in zip([ Button.FX_L, Button.FX_R ], fx):
-            if state == '2':
+            if state == '1':
                 self.buttons[bt] = self.ButtonState.HOLD
-            elif state == '1':
+            elif state == '2':
                 self.buttons[bt] = self.ButtonState.PRESS
             else:
                 self.buttons[bt] = self.ButtonState.NONE
@@ -654,6 +654,7 @@ class Ksh:
         is_metadata = True
         now = Timing(0, 1, 0)
         timesig = TimeSignature(4, 4)
+        holds = dict()
         for line in self.kshfile:
             line_no += 1
             debug().current_line_num = line_no
@@ -730,11 +731,16 @@ class Ksh:
                             laser = LaserNode(laser)
                             self.events[now][(EventKind.TRACK, track)] = laser
                 for button in Button:
-                    if ksh_line.buttons[button] == KshLine.ButtonState.HOLD:
-                        event = ButtonPress(button, 69, 3) # TODO get duration, TODO effects
-                        self.events[now][(EventKind.TRACK, button.to_track_num())] = event
-                    elif ksh_line.buttons[button] == KshLine.ButtonState.PRESS:
+                    if ksh_line.buttons[button] == KshLine.ButtonState.PRESS:
                         self.events[now][(EventKind.TRACK, button.to_track_num())] = ButtonPress(button, 0, 3) # TODO effects
+                    elif ksh_line.buttons[button] == KshLine.ButtonState.HOLD:
+                        if button not in holds:
+                            holds[button] = now
+                    elif button in holds:
+                        start = holds[button]
+                        event = ButtonPress(button, now.diff(start, timesig), 3) # TODO effects
+                        del holds[button]
+                        self.events[start][(EventKind.TRACK, button.to_track_num())] = event
                 now = now.add(1, timesig)
 
         # TODO effect defines
