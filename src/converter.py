@@ -614,169 +614,24 @@ class KshLine:
         self.spin = spin
 
 class Ksh:
-    class State(Enum):
-        @classmethod
-        def from_token(cls, token):
-            if token.startswith('=') or token.startswith(' '):
-                return None
-            elif token == 'END':
-                return cls.NONE
-            if token == 'FORMAT VERSION':
-                return cls.FORMAT_VERSION
-            elif token == 'BPM':
-                return cls.BPM
-            elif token == 'BPM INFO':
-                return cls.BPM_INFO
-            elif token == 'TILT MODE INFO':
-                return cls.TILT_INFO
-            elif token == 'BEAT INFO':
-                return cls.BEAT_INFO
-            elif token == 'END POSISION' or token == 'END POSITION':
-                return cls.END_POSITION
-            elif token == 'SOUND ID START':
-                return cls.SOUND_ID
-            elif token == 'FXBUTTON EFFECT INFO':
-                return cls.FXBUTTON_EFFECT
-            elif token == 'SPCONTROLER' or token == 'SPCONTROLLER':
-                return cls.SPCONTROLLER
-            elif token == 'TAB EFFECT INFO':
-                return cls.TAB_EFFECT
-            elif token == 'TAB PARAM ASSIGN INFO':
-                return cls.TAB_PARAM_ASSIGN
-            elif token == 'TRACK AUTO TAB':
-                return cls.AUTO_TAB
-            elif token.startswith('TRACK'):
-                return cls.TRACK, int(token[5])
-
-        NONE = auto()
-        FORMAT_VERSION = auto()
-        BPM = auto()
-        BPM_INFO = auto()
-        TILT_INFO = auto()
-        BEAT_INFO = auto()
-        END_POSITION = auto()
-        SOUND_ID = auto()
-        TAB_EFFECT = auto()
-        FXBUTTON_EFFECT = auto()
-        TAB_PARAM_ASSIGN = auto()
-        TRACK = auto()
-        AUTO_TAB = auto()
-        SPCONTROLLER = auto()
-
     def __init__(self):
         self.kshfile = None
         self.source_file_name = None
-        self.ascii = None
-        self.game_id = 0
-        self.song_id = 0
-        self.ksh_version = 0
         self.vox_defines = {} # defined in the vox file
         self.ksh_defines = {} # will be defined in the ksh file
         self.effect_fallback = KshEffectDefine.default_effect()
-        self.end = None
         self.events = defaultdict(dict)
 
-        self.last_time = Timing(1, 1, 0)
-        self.new_laser = False
-
-        self.state = None
-        self.state_track = 0
         self.stop_point = None
 
         self.metadata = dict()
-        self.difficulty = None
-        self.difficulty_idx = 0
 
         self.finalized = False
 
         self.required_chip_sounds = set()
 
-    def diff_token(self):
-        return str(self.difficulty_idx) + self.difficulty.to_letter()
-
-    def diff_abbreviation(self):
-        return self.difficulty.to_abbreviation() if self.difficulty != Difficulty.INFINITE else \
-            InfiniteVersion.from_inf_ver(int(self.get_metadata('inf_ver'))).to_abbreviation()
-
-    def get_metadata(self, tag, from_diff=False):
-        if from_diff:
-            the_diff = None
-            for diff in self.metadata.find('difficulty').iter():
-                if diff.tag == self.difficulty.to_xml_name():
-                    the_diff = diff
-                    break
-            if the_diff is None:
-                raise LookupError(f'difficulty {self.difficulty.to_xml_name()} not found in the "music" element')
-            metadata = the_diff.find(tag).text.translate(METADATA_FIX)
-        else:
-            elem = self.metadata.find('info')
-            if elem is not None:
-                metadata = self.metadata.find('info').find(tag).text.translate(METADATA_FIX)
-            else:
-                raise LookupError('no metadata found')
-        for p in METADATA_FIX:
-            metadata = metadata.replace(p[0], p[1])
-        return metadata
-
-    def bpm_string(self):
-        if self.get_metadata('bpm_min') == self.get_metadata('bpm_max'):
-            return int(int(self.get_metadata('bpm_min')) / 100)
-        else:
-            return f'{int(int(self.get_metadata("bpm_min")) / 100)}-{int(int(self.get_metadata("bpm_max")) / 100)}'
-
-    def get_real_difficulty(self) -> str:
-        if self.difficulty == Difficulty.INFINITE:
-            return next(iter([v for v in InfiniteVersion if v.value == int(self.get_metadata('inf_ver'))])).name.lower()
-        return self.difficulty.name.lower()
-
-    def has_event(self, event_kind):
-        for v in self.events.values():
-            if event_kind in v:
-                return True
-        return False
-
-    @staticmethod
-    def has_action_event(event_map):
-        """
-        :param event_map: The associative array mapping EventKinds to their respective events
-        :return: True if there is an "action" event (BT/FX press or hold start, VOL start node, slam) in the map
-        """
-        for kind in event_map.keys():
-            if type(kind) is tuple and kind[0] == EventKind.TRACK:
-                if 2 <= kind[1] <= 7 or type(event_map[kind]) is LaserSlam:
-                    return True
-
-    def time_iter(self, start: Timing, timesig: TimeSignature):
-        """
-        Returns an iterator for the timing and event (or None) for each tick of the chart
-        :param start: the Timing moment to start iterating from
-        :param timesig: the timesig to start in
-        :return: the iterator
-        """
-        if start.offset > timesig.ticks_per_beat():
-            raise ValueError(f'start offset ({start.offset}) greater than ticks per beat ({timesig.ticks_per_beat()})')
-
-        last_timesig = timesig
-
-        m = 0
-        while True:
-            measure = m + 1
-
-            now = Timing(measure, 1, 0)
-            if now in self.events:
-                for kind, event in self.events[now].items():
-                    if kind == EventKind.TIMESIG:
-                        last_timesig = self.events[now][EventKind.TIMESIG]
-
-            for b in range(0, last_timesig.top):
-                beat = b + 1
-
-                for offset in range(0, last_timesig.ticks_per_beat()):
-                    now = Timing(measure, beat, offset)
-
-                    yield (now, self.events[now] if now in self.events else None)
-
-            m += 1
+    def diff(self):
+        return Difficulty.from_ksh_name(self.metadata['difficulty'])
 
     @classmethod
     def from_file(cls, path):
@@ -883,7 +738,7 @@ class Ksh:
 
         self.finalized = True
 
-    def write_to_vox(self, jacket_idx=None, using_difficulty_audio=None, file=sys.stdout):
+    def write_to_vox(self, file=sys.stdout):
         def p(*args, **kwargs):
             print(*args, **kwargs, file=file)
 
@@ -1065,7 +920,7 @@ def do_process_kshfiles(files):
                 debug().record_last_exception(level=Debug.Level.ERROR, tag='ksh_load')
                 continue
 
-            thread_print(f'Processing "{ksh_path}": {str(ksh)}')
+            thread_print(f'Processing "{ksh_path}"')
 
             start_time = time.time()
 
