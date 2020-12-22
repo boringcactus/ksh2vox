@@ -117,7 +117,7 @@ class Timing:
 
     def to_time_str(self):
         """ Create the format string that appears in the first column of vox tracks. """
-        return f'{self.measure}, {self.beat}, {self.offset}'
+        return '{:03},{:02},{:02}'.format(self.measure, self.beat, self.offset)
 
     def diff(self, other, timesig):
         return (self.measure - other.measure) * (timesig.ticks_per_beat() * timesig.top) \
