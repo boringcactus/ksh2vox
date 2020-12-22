@@ -146,7 +146,8 @@ class Timing:
     def __lt__(self, other):
         return (self.measure, self.beat, self.offset) < (other.measure, other.beat, other.offset)
 
-class CameraNode(dataobject):
+@dataclass()
+class CameraNode:
     start_param: float
     end_param: float
     duration: int
@@ -388,7 +389,8 @@ class Button(Enum):
     FX_L = 2
     FX_R = 7
 
-class ButtonPress(dataobject):
+@dataclass()
+class ButtonPress:
     button: Button
     duration: int
     effect: int
@@ -417,7 +419,8 @@ class RollKind(Enum):
     SWING = 5
 
 class LaserNode:
-    class Builder(dataobject):
+    @dataclass()
+    class Builder:
         side: LaserSide = None
         position: int = None
         node_type: LaserCont = None
