@@ -114,13 +114,7 @@ def truncate(x, digits) -> float:
     stepper = 10.0 ** digits
     return math.trunc(stepper * x) / stepper
 
-class KshLoadError(Exception):
-    pass
-
 class KshParseError(Exception):
-    pass
-
-class VoxConvertError(Exception):
     pass
 
 class TimeSignature:
@@ -366,29 +360,6 @@ class KshEffectDefine:
             return ksh_effects.FlangerEffect(*splitted[1:])
         else:
             raise ValueError(f'effect define id {splitted[0]} is not supported')
-
-class TabEffectInfo:
-    # TODO This is a placeholder
-    @staticmethod
-    def line_is_abnormal(line_num, line):
-        line = line.strip()
-        if line_num == 1:
-            return line != '1,	90.00,	400.00,	18000.00,	0.70'
-        elif line_num == 2:
-            return line != '1,	90.00,	600.00,	15000.00,	5.00'
-        elif line_num == 3:
-            return line != '2,	90.00,	40.00,	5000.00,	0.70'
-        elif line_num == 4:
-            return line != '2,	90.00,	40.00,	2000.00,	3.00'
-        elif line_num == 5:
-            return line != '3,	100.00,	30'
-        raise ValueError(f'invalid line number {line_num}')
-
-class TabParamAssignInfo:
-    # TODO This is a placeholder.
-    @staticmethod
-    def line_is_abnormal(line):
-        return not line.endswith('0,	0.00,	0.00')
 
 class Button(Enum):
     def is_fx(self):
