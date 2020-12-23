@@ -19,7 +19,8 @@ from xml.etree import ElementTree
 import ksh_effects
 
 # Ticks per a beat of /4 time
-TICKS_PER_BEAT = 48
+VOX_TICKS_PER_BEAT = 48
+KSH_TICKS_PER_BEAT = 16
 
 SLAM_TICKS = 4
 
@@ -123,7 +124,7 @@ class TimeSignature:
         self.bottom: int = bottom
 
     def ticks_per_beat(self):
-        return int(TICKS_PER_BEAT * (4 / self.bottom))
+        return int(VOX_TICKS_PER_BEAT * (4 / self.bottom))
 
 class Timing:
     # TODO Take timesig as a param
@@ -652,7 +653,7 @@ class Ksh:
     def parse(self):
         line_no = 0
         is_metadata = True
-        now = Timing(0, 1, 0)
+        now = Timing(1, 1, 0)
         timesig = TimeSignature(4, 4)
         holds = dict()
         for line in self.kshfile:
@@ -673,7 +674,9 @@ class Ksh:
                 continue
 
             if line == '--':
-                now = Timing(now.measure + 1, 1, 0)
+                if now.beat != 1 or now.offset != 0:
+                    print('warning: ticks per beat probably incorrect')
+                    now = Timing(now.measure + 1, 1, 0)
             elif line.startswith('beat='):
                 _, sig = line.split('=')
                 top, bottom = sig.split('/')
@@ -741,7 +744,7 @@ class Ksh:
                         event = ButtonPress(button, now.diff(start, timesig), 3) # TODO effects
                         del holds[button]
                         self.events[start][(EventKind.TRACK, button.to_track_num())] = event
-                now = now.add(1, timesig)
+                now = now.add(VOX_TICKS_PER_BEAT // KSH_TICKS_PER_BEAT, timesig)
 
         # TODO effect defines
 
